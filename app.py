@@ -1,37 +1,55 @@
-import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
-    accuracy_score,
     auc,
+    balanced_accuracy_score,
     confusion_matrix,
+    f1_score,
     precision_score,
     recall_score,
     roc_curve,
+    roc_auc_score,
 )
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.tree import DecisionTreeClassifier
+
+from src.placement_data import load_kaggle_train_test
 
 
 st.set_page_config(
-    page_title="Campus | Placement Analytics",
+    page_title="Dự đoán cơ hội việc làm | CNTT",
     page_icon="🎓",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-DATA_FILE = r"D:\Machine-Course\Placement Dataset\Student Placement Dataset\train.csv"
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_FILE = (
+    PROJECT_ROOT
+    / "data"
+    / "processed"
+    / "it_placement_prediction_2026.csv"
+)
+PLACEMENT_DATASET_DIRECTORY = PROJECT_ROOT / "data" / "raw" / "kaggle_student_placement"
+KAGGLE_TRAIN_FILE = PLACEMENT_DATASET_DIRECTORY / "train.csv"
+KAGGLE_TEST_FILE = PLACEMENT_DATASET_DIRECTORY / "test.csv"
+DATASET_CHOICES = [
+    "Kaggle 2026 · CSE/IT (tách 80/20 trong app)",
+    "Kaggle Student Placement · train.csv + test.csv có sẵn",
+]
 TARGET = "Placement_Status"
-FEATURES = [
-    "Degree_Encoded",
-    "Branch_Encoded",
+CATEGORICAL_FEATURES = ["Branch"]
+NUMERIC_FEATURES = [
     "CGPA",
     "Internships",
     "Projects",
@@ -39,291 +57,376 @@ FEATURES = [
     "Certifications",
     "Backlogs",
 ]
+FEATURES = [*CATEGORICAL_FEATURES, *NUMERIC_FEATURES]
 FEATURE_LABELS = {
-    "Degree_Encoded": "Bằng cấp",
-    "Branch_Encoded": "Chuyên ngành",
-    "CGPA": "Điểm tích lũy",
-    "Internships": "Kỳ thực tập",
-    "Projects": "Đồ án",
-    "Coding_Skills": "Kỹ năng coding",
-    "Certifications": "Chứng chỉ",
-    "Backlogs": "Môn nợ",
+    "CGPA": "Điểm tích lũy (CGPA)",
+    "Internships": "Số kỳ thực tập",
+    "Projects": "Số đồ án",
+    "Coding_Skills": "Kỹ năng lập trình",
+    "Certifications": "Số chứng chỉ",
+    "Backlogs": "Số môn nợ",
 }
 MODEL_NAMES = ["Logistic Regression", "Decision Tree", "Random Forest"]
-COLORS = {"Placed": "#19b58a", "Not Placed": "#f07878"}
-
-
+COLORS = {"Placed": "#159879", "Not Placed": "#e57870"}
 st.markdown(
     """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
-    :root { --ink: #142b3b; --muted: #718391; --line: #e8eef2; --mint: #19b58a; }
-    html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
-    .stApp { background: #f5f8fa; color: var(--ink); }
-    [data-testid="stSidebar"] { background: #102c3b; }
-    [data-testid="stSidebar"] * { color: #eef7f7; }
+    :root { --ink:#142b3b; --muted:#617783; --line:#e3ebef; --mint:#159879; }
+    html, body, [class*="css"] { font-family:'DM Sans',sans-serif; }
+    .stApp { background:#f4f7f9; color:var(--ink); }
+    [data-testid="stSidebar"] { background:#102c3b; }
+    [data-testid="stSidebar"] * { color:#eef7f7; }
     [data-testid="stSidebar"] [data-testid="stMetric"] {
-        background: #f8fbfc; border-color: #dce8eb;
+        background:#f8fbfc; border-color:#dce8eb;
     }
-    [data-testid="stSidebar"] [data-testid="stMetric"] * { color: #123746 !important; }
+    [data-testid="stSidebar"] [data-testid="stMetric"] * {
+        color:#123746 !important;
+    }
     [data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"] {
-        background: #193e4e !important; color: #eef7f7 !important;
+        background:#193e4e !important; color:#eef7f7 !important;
     }
     [data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"] * {
-        color: #eef7f7 !important;
+        color:#eef7f7 !important;
     }
     .hero {
-        padding: 2rem 2.2rem; border-radius: 22px; color: white;
-        background: linear-gradient(118deg, #102c3b 0%, #165b63 62%, #19a783 100%);
-        margin: .4rem 0 1.3rem 0; box-shadow: 0 14px 35px rgba(16,44,59,.14);
+        padding:2rem 2.2rem; border-radius:22px; color:white;
+        background:linear-gradient(118deg,#102c3b 0%,#165b63 62%,#159879 100%);
+        margin:.4rem 0 1.3rem; box-shadow:0 14px 35px rgba(16,44,59,.14);
     }
-    .hero-kicker { color: #a7e8d5; text-transform: uppercase; letter-spacing: .14em;
-        font-weight: 700; font-size: .75rem; }
-    .hero h1 { font-family: 'Manrope', sans-serif; font-size: clamp(1.8rem, 3vw, 2.7rem);
-        line-height: 1.18; margin: .55rem 0; color: white; }
-    .hero p { color: #d7e9e9; margin: 0; max-width: 760px; }
-    [data-testid="stMetric"] { background: white; border: 1px solid var(--line);
-        border-radius: 16px; padding: 16px 18px; box-shadow: 0 5px 18px rgba(24,54,70,.04); }
-    [data-testid="stMetricLabel"] { color: var(--muted); }
-    div[data-testid="stTabs"] button { font-weight: 700; }
-    div[data-testid="stTabs"] button[aria-selected="true"] { color: #10896c; }
-    div[data-testid="stPlotlyChart"] { background: white; border: 1px solid var(--line);
-        border-radius: 16px; padding: 8px; }
+    .hero-kicker { color:#b9ecdc; text-transform:uppercase;
+        letter-spacing:.14em; font-weight:700; font-size:.75rem; }
+    .hero h1 { font-family:'Manrope',sans-serif;
+        font-size:clamp(1.8rem,3vw,2.7rem); line-height:1.18;
+        margin:.55rem 0; color:white; }
+    .hero p { color:#e2eeee; margin:0; max-width:780px; }
+    [data-testid="stMetric"] { background:white; border:1px solid var(--line);
+        border-radius:16px; padding:16px 18px;
+        box-shadow:0 5px 18px rgba(24,54,70,.04); }
+    [data-testid="stMetricLabel"] { color:var(--muted); }
+    div[data-testid="stTabs"] button { font-weight:700; }
+    div[data-testid="stTabs"] button[aria-selected="true"] { color:#10896c; }
+    div[data-testid="stPlotlyChart"] { background:white;
+        border:1px solid var(--line); border-radius:16px; padding:8px; }
     div[data-testid="stButton"] > button {
-        border: 0; border-radius: 12px; color: white;
-        background: linear-gradient(110deg, #118b70, #19b58a);
-        font-weight: 700; padding: .65rem 1rem;
+        border:0; border-radius:12px; color:white;
+        background:linear-gradient(110deg,#118b70,#19b58a);
+        font-weight:700; padding:.65rem 1rem;
     }
     div[data-testid="stButton"] > button:hover {
-        color: white; border: 0; background: linear-gradient(110deg, #0d765f, #139c77);
+        color:white; border:0; background:linear-gradient(110deg,#0d765f,#139c77);
     }
-    .section-note { color: #718391; font-size: .9rem; margin-top: -.55rem; }
-    .result-card { background: white; border: 1px solid #e8eef2; border-radius: 18px;
-        padding: 1.2rem 1.4rem; }
-    footer { visibility: hidden; }
+    .section-note { color:#617783; font-size:.9rem; margin-top:-.55rem; }
+    footer { visibility:hidden; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 
-def get_raw_data():
-    if os.path.exists(DATA_FILE):
-        frame = pd.read_csv(DATA_FILE)
-        st.sidebar.success("✅ Đã kết nối thành công file train.csv!")
-    else:
-        st.sidebar.warning(
-            f"⚠️ Không tìm thấy file tại '{DATA_FILE}'. Đang dùng dữ liệu mô phỏng."
-        )
-        np.random.seed(42)
-        sample_count = 500
-        frame = pd.DataFrame(
-            {
-                "Degree": np.random.choice(
-                    ["B.Tech", "BCA", "MCA", "B.Sc"], sample_count
-                ),
-                "Branch": np.random.choice(
-                    ["CSE", "ECE", "IT", "ME", "Civil"], sample_count
-                ),
-                "CGPA": np.round(np.random.uniform(5.5, 9.5, sample_count), 2),
-                "Internships": np.random.randint(0, 3, sample_count),
-                "Projects": np.random.randint(1, 5, sample_count),
-                "Coding_Skills": np.random.randint(1, 10, sample_count),
-                "Certifications": np.random.randint(0, 4, sample_count),
-                "Backlogs": np.random.randint(0, 4, sample_count),
-                TARGET: np.random.choice(["Placed", "Not Placed"], sample_count),
-            }
-        )
+@st.cache_data
+def load_data(path: str) -> pd.DataFrame:
+    frame = pd.read_csv(path, encoding="utf-8-sig")
+    frame.columns = frame.columns.str.strip()
+    missing = sorted(set(FEATURES + [TARGET]).difference(frame.columns))
+    if missing:
+        raise ValueError(f"Thiếu các cột dữ liệu bắt buộc: {', '.join(missing)}")
+
+    frame = frame[FEATURES + [TARGET]].copy()
+    frame["Branch"] = frame["Branch"].astype("string").str.strip()
+    frame[TARGET] = frame[TARGET].astype("string").str.strip()
+    for column in NUMERIC_FEATURES:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.dropna(subset=FEATURES + [TARGET])
+    frame = frame[frame[TARGET].isin(["Placed", "Not Placed"])]
+    frame = frame.reset_index(drop=True)
+    if frame.empty or frame[TARGET].nunique() != 2:
+        raise ValueError("Dataset phải có đủ hai nhãn Placed và Not Placed.")
     return frame
 
 
-df_raw = get_raw_data()
-df_raw.columns = df_raw.columns.str.strip()
-required_columns = {
-    "Degree",
-    "Branch",
-    "CGPA",
-    "Internships",
-    "Projects",
-    "Coding_Skills",
-    "Certifications",
-    "Backlogs",
-    TARGET,
-}
-missing_columns = sorted(required_columns.difference(df_raw.columns))
-if missing_columns:
-    st.error(f"Thiếu cột bắt buộc trong dữ liệu: {', '.join(missing_columns)}")
+def make_preprocessor() -> ColumnTransformer:
+    return ColumnTransformer(
+        transformers=[
+            (
+                "branch",
+                OneHotEncoder(handle_unknown="ignore"),
+                CATEGORICAL_FEATURES,
+            ),
+            ("numeric", StandardScaler(), NUMERIC_FEATURES),
+        ],
+        remainder="drop",
+    )
+
+
+def make_models() -> dict[str, Pipeline]:
+    classifiers = {
+        "Logistic Regression": LogisticRegression(
+            class_weight="balanced", max_iter=2000, random_state=42
+        ),
+        "Decision Tree": DecisionTreeClassifier(
+            class_weight="balanced",
+            max_depth=3,
+            min_samples_leaf=4,
+            random_state=42,
+        ),
+        "Random Forest": RandomForestClassifier(
+            class_weight="balanced",
+            n_estimators=160,
+            min_samples_leaf=3,
+            random_state=42,
+        ),
+    }
+    return {
+        name: Pipeline(
+            [
+                ("preprocess", make_preprocessor()),
+                ("classifier", classifier),
+            ]
+        )
+        for name, classifier in classifiers.items()
+    }
+
+
+def probability_for_placed(model: Pipeline, samples: pd.DataFrame) -> np.ndarray:
+    class_index = list(model.classes_).index("Placed")
+    return model.predict_proba(samples)[:, class_index]
+
+
+@st.cache_data(show_spinner="Đang đánh giá mô hình trên tập kiểm thử...")
+def evaluate_models(data: pd.DataFrame, test_data: pd.DataFrame | None = None):
+    X = data[FEATURES]
+    y = data[TARGET]
+    if test_data is None and y.value_counts().min() < 2:
+        raise ValueError(
+            "Mỗi nhãn cần tối thiểu 2 hồ sơ để tạo tập train/test phân tầng."
+        )
+
+    if test_data is None:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=0.2,
+            random_state=42,
+            stratify=y,
+        )
+    else:
+        X_train, y_train = X, y
+        X_test = test_data[FEATURES]
+        y_test = test_data[TARGET]
+        if y_train.nunique() != 2 or y_test.nunique() != 2:
+            raise ValueError(
+                "Cả tập train và test đều phải có hai nhãn placement."
+            )
+
+    models = make_models()
+    metrics = {}
+    holdout_results = {}
+    for name, model in models.items():
+        model.fit(X_train, y_train)
+        predictions = model.predict(X_test)
+        probabilities = probability_for_placed(model, X_test)
+        metrics[name] = {
+            "balanced_accuracy": balanced_accuracy_score(y_test, predictions),
+            "f1_macro": f1_score(y_test, predictions, average="macro"),
+            "precision_macro": precision_score(
+                y_test, predictions, average="macro", zero_division=0
+            ),
+            "recall_macro": recall_score(
+                y_test, predictions, average="macro", zero_division=0
+            ),
+            "roc_auc": roc_auc_score(y_test == "Placed", probabilities),
+        }
+        holdout_results[name] = {
+            "probability": probabilities,
+            "prediction": predictions,
+        }
+        if test_data is None:
+            model.fit(X, y)
+    return models, metrics, holdout_results, y_test
+
+
+st.sidebar.markdown("## 🎓 Dự đoán việc làm CNTT")
+st.sidebar.caption("Hồ sơ sinh viên CNTT · dự đoán placement")
+dataset_choice = st.sidebar.selectbox("📚 Dataset:", DATASET_CHOICES)
+test_df = None
+if dataset_choice == DATASET_CHOICES[1]:
+    try:
+        df, test_df = load_kaggle_train_test(KAGGLE_TRAIN_FILE, KAGGLE_TEST_FILE)
+    except (OSError, ValueError, pd.errors.ParserError) as exc:
+        st.error(f"Không thể nạp Kaggle train/test: {exc}")
+        st.stop()
+    source_description = (
+        "Nguồn Kaggle Student Placement Dataset, giấy phép CC0; tác giả ghi rõ "
+        "50.000 dòng là dữ liệu tổng hợp. Chỉ giữ nhánh CSE/IT. Mô hình fit trên "
+        "train.csv; test.csv giữ riêng để đánh giá."
+    )
+    evaluation_description = (
+        "Kaggle train.csv và test.csv có sẵn · test.csv không tham gia huấn luyện"
+    )
+    evaluation_header = "📊 Test set Kaggle giữ riêng"
+else:
+    if not DATA_FILE.exists():
+        st.error(
+            f"Chưa có dataset đã chuẩn hóa: `{DATA_FILE}`. "
+            "Chạy `python scripts/prepare_external_dataset.py` sau khi đặt CSV "
+            "nguồn trong `data/raw/kaggle_placement_prediction_2026/`."
+        )
+        st.stop()
+    try:
+        df = load_data(str(DATA_FILE))
+    except (OSError, ValueError, pd.errors.ParserError) as exc:
+        st.error(f"Không thể nạp dataset: {exc}")
+        st.stop()
+    source_description = (
+        "Nguồn Kaggle Student Placement Prediction Dataset 2026, giấy phép CC0; "
+        "tác giả ghi rõ đây là dữ liệu tổng hợp. Chỉ giữ nhánh CSE/IT."
+    )
+    evaluation_description = "Holdout phân tầng 80/20 từ dataset đang chọn"
+    evaluation_header = "📊 Holdout phân tầng 80/20"
+    evaluation_help = (
+        "Balanced accuracy trên holdout 20%. Mô hình dự đoán được fit lại "
+        "trên toàn bộ dataset sau khi chấm điểm."
+    )
+if test_df is not None:
+    evaluation_help = (
+        "Balanced accuracy trên test.csv đã được Kaggle tách sẵn. "
+        "Mô hình dự đoán chỉ được fit bằng các dòng CSE/IT của train.csv."
+    )
+
+try:
+    models, evaluation_metrics, holdout_results, y_test = evaluate_models(df, test_df)
+except ValueError as exc:
+    st.error(f"Không thể đánh giá mô hình: {exc}")
     st.stop()
 
-df_clean = df_raw.dropna(subset=list(required_columns)).copy()
-df_clean["Degree"] = df_clean["Degree"].astype(str).str.strip()
-df_clean["Branch"] = df_clean["Branch"].astype(str).str.strip()
-df_clean[TARGET] = df_clean[TARGET].astype(str).str.strip()
-df_clean = df_clean[df_clean[TARGET].isin(["Placed", "Not Placed"])]
-
-if df_clean.empty or df_clean[TARGET].nunique() != 2:
-    st.error("Dữ liệu cần có ít nhất một hồ sơ cho mỗi nhãn Placement_Status.")
-    st.stop()
-
-le_degree = LabelEncoder()
-le_branch = LabelEncoder()
-df_clean["Degree_Encoded"] = le_degree.fit_transform(df_clean["Degree"])
-df_clean["Branch_Encoded"] = le_branch.fit_transform(df_clean["Branch"])
-df_clean["PlacementStatus_Encoded"] = df_clean[TARGET].map(
-    {"Placed": 1, "Not Placed": 0}
-)
-
-X = df_clean[FEATURES]
-y = df_clean["PlacementStatus_Encoded"]
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
-models = {
-    "Logistic Regression": LogisticRegression(
-        C=0.5, max_iter=1000, random_state=42
-    ),
-    "Decision Tree": DecisionTreeClassifier(
-        max_depth=4,
-        min_samples_split=10,
-        min_samples_leaf=5,
-        random_state=42,
-    ),
-    "Random Forest": RandomForestClassifier(
-        n_estimators=80,
-        max_depth=5,
-        min_samples_leaf=4,
-        random_state=42,
-    ),
-}
-
-accuracies = {}
-test_predictions = {}
-test_probabilities = {}
-for name, model in models.items():
-    train_features = X_train_scaled if name == "Logistic Regression" else X_train
-    test_features = X_test_scaled if name == "Logistic Regression" else X_test
-    model.fit(train_features, y_train)
-    test_predictions[name] = model.predict(test_features)
-    test_probabilities[name] = model.predict_proba(test_features)[:, 1]
-    accuracies[name] = accuracy_score(y_test, test_predictions[name])
-
-st.sidebar.markdown("## 🎓 Campus")
-st.sidebar.caption("Placement analytics · Student outcomes")
 st.sidebar.markdown("---")
-st.sidebar.header("📊 Hiệu năng mô hình")
-for name, accuracy in accuracies.items():
-    st.sidebar.metric(name, f"{accuracy * 100:.2f}%")
+st.sidebar.header(evaluation_header)
+for model_name in MODEL_NAMES:
+    st.sidebar.metric(
+        model_name,
+        f"{evaluation_metrics[model_name]['balanced_accuracy'] * 100:.1f}%",
+        help=evaluation_help,
+    )
 st.sidebar.markdown("---")
-chosen_model = st.sidebar.selectbox("🤖 Mô hình dự đoán:", list(models.keys()))
-model_active = models[chosen_model]
+chosen_model = st.sidebar.selectbox("🤖 Mô hình dự đoán:", MODEL_NAMES)
 st.sidebar.caption(
-    "Điểm số được tính trên tập kiểm tra giữ riêng, không phải cam kết kết quả tuyển dụng."
+    "Điểm số chỉ áp dụng cho tập kiểm thử của nguồn đang chọn; "
+    "không phải cam kết tuyển dụng hoặc hiệu quả thực tế."
 )
+
+placed_count = int((df[TARGET] == "Placed").sum())
+not_placed_count = int((df[TARGET] == "Not Placed").sum())
+placement_rate = placed_count / len(df) * 100
 
 st.markdown(
     """
     <div class="hero">
-      <div class="hero-kicker">Student outcomes · Machine learning</div>
-      <h1>Biến dữ liệu sinh viên thành<br>những quyết định rõ ràng hơn.</h1>
-      <p>Khám phá xu hướng placement, so sánh mô hình và thử phân tích một hồ sơ sinh viên trong cùng một không gian.</p>
+      <div class="hero-kicker">CSE/IT · phân tích placement</div>
+      <h1>Dự đoán cơ hội việc làm<br>của sinh viên CNTT mới ra trường</h1>
+      <p>Khám phá dữ liệu placement, đánh giá mô hình trên tập kiểm thử và thử dự đoán cho một hồ sơ mới.</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-placed_count = int((df_clean[TARGET] == "Placed").sum())
-not_placed_count = int((df_clean[TARGET] == "Not Placed").sum())
-placement_rate = placed_count / len(df_clean) * 100
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-kpi1.metric("Tổng hồ sơ", f"{len(df_clean):,}", help="Số dòng hợp lệ dùng trong ứng dụng")
-kpi2.metric("Đã placement", f"{placed_count:,}")
-kpi3.metric("Tỷ lệ placement", f"{placement_rate:.1f}%")
-kpi4.metric("Mô hình đang chọn", chosen_model)
+kpi1.metric("Hồ sơ hợp lệ", f"{len(df):,}")
+kpi2.metric("Placed", f"{placed_count:,}")
+kpi3.metric("Tỷ lệ Placed", f"{placement_rate:.1f}%")
+kpi4.metric("Số nhãn", "2", "Placed · Not Placed")
+source_notice = (
+    f"{source_description} Dataset train đang dùng gồm {len(df):,} hồ sơ"
+    + (
+        f", test giữ riêng gồm {len(test_df):,} hồ sơ. "
+        if test_df is not None
+        else ". "
+    )
+    + "Điểm aptitude không được dùng làm đặc trưng. "
+    + "Nhãn Placed/Not Placed là kết quả placement trong dữ liệu, chỉ được dùng "
+    + "làm biến đại diện cho cơ hội việc làm — không chứng minh tình trạng có việc "
+    + "sau tốt nghiệp hay khả năng áp dụng ra ngoài mẫu."
+)
+st.info(source_notice)
 
 tab_predict, tab_overview, tab_models, tab_data = st.tabs(
     [
         "🔮  Dự đoán hồ sơ",
         "🌍  Toàn cảnh dữ liệu",
-        "🧠  Phân tích mô hình",
+        "🧠  Đánh giá mô hình",
         "🗂️  Khám phá dữ liệu",
     ]
 )
 
 with tab_predict:
-    st.subheader("Thử một hồ sơ sinh viên")
+    st.subheader("Thử một hồ sơ CSE/IT")
     st.markdown(
-        '<p class="section-note">Điều chỉnh các thông số bên dưới và xem mô hình ước lượng mức độ phù hợp.</p>',
+        '<p class="section-note">Giá trị đầu vào được giới hạn theo khoảng quan sát trong dataset.</p>',
         unsafe_allow_html=True,
     )
     input_col, result_col = st.columns([1, 1.15], gap="large")
     with input_col:
         with st.container(border=True):
             st.markdown("#### 📝 Hồ sơ đầu vào")
-            input_degree = st.selectbox("Bằng cấp (Degree):", le_degree.classes_)
-            input_branch = st.selectbox("Chuyên ngành (Branch):", le_branch.classes_)
-            first_row, second_row = st.columns(2)
-            with first_row:
-                input_cgpa = st.slider(
-                    "CGPA", 4.0, 10.0, 7.2, step=0.01
-                )
-                input_intern = st.number_input(
-                    "Kỳ thực tập", min_value=0, max_value=5, value=1
-                )
-                input_project = st.slider("Đồ án", 0, 10, 2)
-            with second_row:
-                input_code = st.slider("Kỹ năng coding", 1, 10, 6)
-                input_cert = st.number_input(
-                    "Chứng chỉ", min_value=0, max_value=10, value=1
-                )
-                input_backlog = st.number_input(
-                    "Môn nợ", min_value=0, max_value=10, value=0
-                )
-
-    user_features = pd.DataFrame(
-        [
-            [
-                le_degree.transform([input_degree])[0],
-                le_branch.transform([input_branch])[0],
-                input_cgpa,
-                input_intern,
-                input_project,
-                input_code,
-                input_cert,
-                input_backlog,
-            ]
-        ],
+            branch = st.selectbox("Chuyên ngành:", sorted(df["Branch"].unique()))
+            left, right = st.columns(2)
+            defaults = df[NUMERIC_FEATURES].median()
+            bounds = df[NUMERIC_FEATURES].agg(["min", "max"])
+            input_values = {}
+            for index, feature in enumerate(NUMERIC_FEATURES):
+                column = left if index % 2 == 0 else right
+                minimum = float(bounds.loc["min", feature])
+                maximum = float(bounds.loc["max", feature])
+                default = float(defaults[feature])
+                label = FEATURE_LABELS[feature]
+                with column:
+                    if feature in {
+                        "Internships",
+                        "Projects",
+                        "Coding_Skills",
+                        "Certifications",
+                        "Backlogs",
+                    }:
+                        input_values[feature] = st.slider(
+                            label,
+                            min_value=int(minimum),
+                            max_value=int(maximum),
+                            value=int(round(default)),
+                        )
+                    else:
+                        input_values[feature] = st.slider(
+                            label,
+                            min_value=minimum,
+                            max_value=maximum,
+                            value=default,
+                            step=0.01 if feature == "CGPA" else 1.0,
+                        )
+    sample = pd.DataFrame(
+        [{"Branch": branch, **input_values}],
         columns=FEATURES,
     )
 
     with result_col:
         with st.container(border=True):
-            st.markdown("#### ✨ Kết quả & gợi ý")
-            st.caption(f"Mô hình đang xử lý: **{chosen_model}**")
+            st.markdown("#### ✨ Kết quả dự đoán")
+            st.caption(f"Mô hình: **{chosen_model}**")
             if st.button(
                 "🚀  Phân tích hồ sơ",
                 type="primary",
                 use_container_width=True,
             ):
-                model_input = (
-                    scaler.transform(user_features)
-                    if chosen_model == "Logistic Regression"
-                    else user_features
-                )
-                prediction = model_active.predict(model_input)[0]
-                probability = model_active.predict_proba(model_input)[0][1]
-                probability_pct = probability * 100
+                model = models[chosen_model]
+                probability = float(probability_for_placed(model, sample)[0])
+                prediction = model.predict(sample)[0]
                 gauge = go.Figure(
                     go.Indicator(
                         mode="gauge+number",
-                        value=probability_pct,
+                        value=probability * 100,
                         number={"suffix": "%", "font": {"size": 38}},
-                        title={"text": "Xác suất dự đoán"},
+                        title={"text": "Xác suất dự đoán Placed"},
                         gauge={
                             "axis": {"range": [0, 100]},
-                            "bar": {"color": "#19b58a"},
+                            "bar": {"color": "#159879"},
                             "bgcolor": "#edf3f4",
                             "steps": [
                                 {"range": [0, 50], "color": "#fff0ef"},
@@ -338,233 +441,193 @@ with tab_predict:
                     )
                 )
                 gauge.update_layout(
-                    height=270,
-                    margin={"l": 25, "r": 25, "t": 65, "b": 10},
+                    height=260,
+                    margin={"l": 25, "r": 25, "t": 65, "b": 5},
                     paper_bgcolor="white",
                     font={"color": "#142b3b"},
                 )
                 st.plotly_chart(gauge, width="stretch")
-                st.metric(
-                    label="Xác suất trúng tuyển (Hiring Probability)",
-                    value=f"{probability_pct:.2f}%",
-                )
-                if prediction == 1:
+                st.metric("Xác suất Placed trong mô hình", f"{probability * 100:.1f}%")
+                if prediction == "Placed":
                     st.success(
-                        "🎉 **Kết quả:** Xếp loại **Placed**! Hồ sơ của bạn đáp ứng rất tốt tiêu chí tuyển dụng cơ bản."
+                        "**Mô hình dự đoán: Placed.** Đây là ước lượng thống kê "
+                        "trên dữ liệu dự án, không đảm bảo kết quả tuyển dụng."
                     )
-                    st.balloons()
                 else:
-                    st.error(
-                        "⚠️ **Kết quả:** Xếp loại **Not Placed**. Hồ sơ hiện tại đang gặp bất lợi cạnh tranh."
+                    st.warning(
+                        "**Mô hình dự đoán: Not Placed.** Đây là ước lượng thống kê "
+                        "trên dữ liệu dự án, không đảm bảo kết quả tuyển dụng."
                     )
-                    suggestions = []
-                    if input_backlog > 0:
-                        suggestions.append(
-                            "Ưu tiên cải thiện kết quả học tập và giảm số môn nợ."
-                        )
-                    if input_code < 6:
-                        suggestions.append(
-                            "Luyện coding đều đặn qua bài tập thuật toán và dự án cá nhân."
-                        )
-                    if input_intern == 0:
-                        suggestions.append(
-                            "Tìm cơ hội thực tập để tích lũy kinh nghiệm thực tế."
-                        )
-                    if not suggestions:
-                        suggestions.append(
-                            "Tiếp tục nâng cao hồ sơ qua dự án, kỹ năng và kinh nghiệm thực tế."
-                        )
-                    st.markdown("**Một vài hướng cải thiện**")
-                    for suggestion in suggestions:
-                        st.write(f"• {suggestion}")
             else:
                 st.info(
-                    "Điền hồ sơ bên trái, sau đó nhấn **Phân tích hồ sơ** để xem xác suất dự đoán."
+                    "Nhập hồ sơ bên trái rồi nhấn **Phân tích hồ sơ** để xem dự đoán."
                 )
                 st.caption(
-                    "Đây là kết quả của mô hình học máy trên dữ liệu hiện có, không phải lời hứa về tuyển dụng."
+                    "Các xác suất chưa được hiệu chỉnh/đánh giá calibration; "
+                    "hãy xem đây là điểm số tương đối của mô hình."
                 )
 
 with tab_overview:
-    st.subheader("Toàn cảnh hồ sơ sinh viên")
+    st.subheader("Toàn cảnh hồ sơ trong dataset")
     st.markdown(
-        '<p class="section-note">Phân bố kết quả và các mối liên hệ trong tập dữ liệu đã nạp.</p>',
+        '<p class="section-note">Mô tả dữ liệu đã lọc; không suy rộng thành tỷ lệ tuyển dụng của toàn thị trường.</p>',
         unsafe_allow_html=True,
     )
-    distribution_col, rate_col = st.columns(2, gap="large")
-    with distribution_col:
+    status_col, branch_col = st.columns(2, gap="large")
+    with status_col:
         status_counts = (
-            df_clean[TARGET]
-            .value_counts()
-            .rename_axis("Kết quả")
-            .reset_index(name="Số hồ sơ")
+            df[TARGET].value_counts().rename_axis("Kết quả").reset_index(name="Hồ sơ")
         )
-        donut = px.pie(
+        chart = px.pie(
             status_counts,
             names="Kết quả",
-            values="Số hồ sơ",
-            hole=0.64,
+            values="Hồ sơ",
+            hole=0.62,
             color="Kết quả",
             color_discrete_map=COLORS,
-            title="Tỷ trọng kết quả placement",
+            title="Tỷ trọng nhãn trong mẫu",
         )
-        donut.update_traces(
-            textposition="inside",
-            textinfo="percent+label",
-            marker={"line": {"color": "white", "width": 3}},
-        )
-        donut.update_layout(
-            height=390,
-            margin={"l": 15, "r": 15, "t": 65, "b": 15},
-            legend_title_text="",
-        )
-        st.plotly_chart(donut, width="stretch")
-    with rate_col:
-        branch_stats = (
-            df_clean.groupby("Branch", observed=True)[TARGET]
-            .apply(lambda values: (values == "Placed").mean() * 100)
-            .rename("Tỷ lệ placement (%)")
+        chart.update_layout(height=380, legend_title_text="")
+        st.plotly_chart(chart, width="stretch")
+    with branch_col:
+        branch_summary = (
+            df.groupby("Branch", observed=True)[TARGET]
+            .agg(total="count", placed=lambda values: (values == "Placed").sum())
             .reset_index()
-            .sort_values("Tỷ lệ placement (%)", ascending=True)
         )
-        branch_chart = px.bar(
-            branch_stats,
-            x="Tỷ lệ placement (%)",
-            y="Branch",
-            orientation="h",
+        branch_summary["Tỷ lệ Placed (%)"] = (
+            branch_summary["placed"] / branch_summary["total"] * 100
+        )
+        chart = px.bar(
+            branch_summary,
+            x="Branch",
+            y="Tỷ lệ Placed (%)",
+            color="Branch",
             text_auto=".1f",
-            color="Tỷ lệ placement (%)",
-            color_continuous_scale=["#b7e9d9", "#13876d"],
-            title="Tỷ lệ placement theo chuyên ngành",
+            hover_data=["total", "placed"],
+            title="Tỷ lệ Placed theo chuyên ngành",
+            color_discrete_sequence=px.colors.qualitative.Safe,
         )
-        branch_chart.update_layout(
-            height=390,
-            margin={"l": 15, "r": 20, "t": 65, "b": 25},
-            coloraxis_showscale=False,
-            xaxis_title="Tỷ lệ placement (%)",
-            yaxis_title="",
-        )
-        st.plotly_chart(branch_chart, width="stretch")
+        chart.update_layout(height=380, showlegend=False, yaxis_range=[0, 100])
+        st.plotly_chart(chart, width="stretch")
 
     cgpa_col, skills_col = st.columns(2, gap="large")
     with cgpa_col:
-        cgpa_chart = px.histogram(
-            df_clean,
+        chart = px.histogram(
+            df,
             x="CGPA",
             color=TARGET,
             marginal="box",
             barmode="overlay",
             opacity=0.72,
-            nbins=28,
             color_discrete_map=COLORS,
             title="Phân bố CGPA theo kết quả",
         )
-        cgpa_chart.update_layout(
-            height=410,
-            margin={"l": 15, "r": 15, "t": 65, "b": 25},
-            xaxis_title="CGPA",
-            yaxis_title="Số hồ sơ",
-            legend_title_text="",
-        )
-        st.plotly_chart(cgpa_chart, width="stretch")
+        chart.update_layout(height=400, legend_title_text="")
+        st.plotly_chart(chart, width="stretch")
     with skills_col:
-        scatter_data = df_clean.sample(
-            n=min(3500, len(df_clean)), random_state=42
-        )
-        scatter = px.scatter(
-            scatter_data,
-            x="CGPA",
-            y="Coding_Skills",
+        chart = px.scatter(
+            df,
+            x="Coding_Skills",
+            y="CGPA",
             color=TARGET,
             size="Projects",
             hover_data=["Branch", "Internships", "Certifications"],
-            opacity=0.62,
             color_discrete_map=COLORS,
-            title="CGPA và kỹ năng coding",
+            title="CGPA và kỹ năng lập trình",
         )
-        scatter.update_layout(
-            height=410,
-            margin={"l": 15, "r": 15, "t": 65, "b": 25},
-            xaxis_title="CGPA",
-            yaxis_title="Kỹ năng coding",
-            legend_title_text="",
-        )
-        st.plotly_chart(scatter, width="stretch")
+        chart.update_layout(height=400, legend_title_text="")
+        st.plotly_chart(chart, width="stretch")
 
 with tab_models:
-    st.subheader("So sánh và hiểu hiệu năng mô hình")
+    st.subheader("So sánh mô hình trên tập kiểm thử")
     st.markdown(
-        '<p class="section-note">Các chỉ số được tính trên cùng một tập test độc lập.</p>',
+        f'<p class="section-note">Các chỉ số được tính trên {evaluation_description}. '
+        + (
+            "Mô hình dự đoán được fit trên train.csv; "
+            "test.csv không được dùng để fit."
+            if test_df is not None
+            else "Mô hình dự đoán sau đó được fit trên toàn bộ dataset."
+        )
+        + "</p>",
         unsafe_allow_html=True,
     )
-    accuracy_data = pd.DataFrame(
-        {
-            "Mô hình": list(models.keys()),
-            "Accuracy (%)": [accuracies[name] * 100 for name in models],
-            "Precision (%)": [
-                precision_score(y_test, test_predictions[name], zero_division=0) * 100
-                for name in models
-            ],
-            "Recall (%)": [
-                recall_score(y_test, test_predictions[name], zero_division=0) * 100
-                for name in models
-            ],
-        }
+    metric_labels = {
+        "balanced_accuracy": "Balanced accuracy (%)",
+        "f1_macro": "Macro F1 (%)",
+        "precision_macro": "Macro precision (%)",
+        "recall_macro": "Macro recall (%)",
+        "roc_auc": "ROC AUC (%)",
+    }
+    summary_rows = []
+    for name in MODEL_NAMES:
+        row = {"Mô hình": name}
+        for key, label in metric_labels.items():
+            row[label] = evaluation_metrics[name][key] * 100
+        summary_rows.append(row)
+    summary = pd.DataFrame(summary_rows)
+    chart_data = summary.melt(
+        id_vars="Mô hình",
+        value_vars=list(metric_labels.values()),
+        var_name="Chỉ số",
+        value_name="Điểm (%)",
     )
-    score_chart = px.bar(
-        accuracy_data.melt(
-            id_vars="Mô hình", var_name="Chỉ số", value_name="Điểm (%)"
-        ),
+    chart = px.bar(
+        chart_data,
         x="Mô hình",
         y="Điểm (%)",
         color="Chỉ số",
         barmode="group",
-        text_auto=".1f",
-        color_discrete_sequence=["#19b58a", "#4389a2", "#efaa62"],
-        title="Accuracy, precision và recall",
+        title="Chỉ số phân loại trên tập kiểm thử",
+        color_discrete_sequence=["#159879", "#4287a0", "#e8a05a", "#916bb5", "#dc7181"],
     )
-    score_chart.update_layout(
-        height=410,
-        margin={"l": 15, "r": 15, "t": 65, "b": 25},
-        yaxis_range=[0, 100],
-        legend_title_text="",
+    chart.update_layout(height=420, yaxis_range=[0, 100], legend_title_text="")
+    st.plotly_chart(chart, width="stretch")
+    st.dataframe(
+        summary.round(1),
+        width="stretch",
+        hide_index=True,
+        column_config={
+            column: st.column_config.NumberColumn(format="%.1f")
+            for column in summary.columns
+            if column != "Mô hình"
+        },
     )
-    st.plotly_chart(score_chart, width="stretch")
-
     matrix_col, roc_col = st.columns(2, gap="large")
+    selected_predictions = holdout_results[chosen_model]["prediction"]
+    selected_probabilities = holdout_results[chosen_model]["probability"]
     with matrix_col:
-        matrix = confusion_matrix(y_test, test_predictions[chosen_model], labels=[0, 1])
-        matrix_chart = px.imshow(
+        matrix = confusion_matrix(
+            y_test,
+            selected_predictions,
+            labels=["Not Placed", "Placed"],
+        )
+        chart = px.imshow(
             matrix,
             x=["Dự đoán: Not Placed", "Dự đoán: Placed"],
             y=["Thực tế: Not Placed", "Thực tế: Placed"],
             text_auto=True,
             color_continuous_scale=["#edf4f5", "#168b70"],
-            aspect="auto",
             title=f"Ma trận nhầm lẫn · {chosen_model}",
         )
-        matrix_chart.update_layout(
-            height=390,
-            margin={"l": 15, "r": 15, "t": 65, "b": 50},
-            coloraxis_showscale=False,
-        )
-        st.plotly_chart(matrix_chart, width="stretch")
+        chart.update_layout(height=370, coloraxis_showscale=False)
+        st.plotly_chart(chart, width="stretch")
     with roc_col:
-        roc_chart = go.Figure()
-        for name in models:
+        chart = go.Figure()
+        for name in MODEL_NAMES:
+            probabilities = holdout_results[name]["probability"]
             false_positive_rate, true_positive_rate, _ = roc_curve(
-                y_test, test_probabilities[name]
+                y_test == "Placed", probabilities
             )
-            roc_auc = auc(false_positive_rate, true_positive_rate)
-            roc_chart.add_trace(
+            chart.add_trace(
                 go.Scatter(
                     x=false_positive_rate,
                     y=true_positive_rate,
                     mode="lines",
-                    name=f"{name} · AUC {roc_auc:.3f}",
+                    name=f"{name} · AUC {auc(false_positive_rate, true_positive_rate):.2f}",
                 )
             )
-        roc_chart.add_trace(
+        chart.add_trace(
             go.Scatter(
                 x=[0, 1],
                 y=[0, 1],
@@ -573,150 +636,77 @@ with tab_models:
                 line={"dash": "dash", "color": "#9aaab2"},
             )
         )
-        roc_chart.update_layout(
-            title="Đường cong ROC",
-            height=390,
-            margin={"l": 15, "r": 15, "t": 65, "b": 45},
+        chart.update_layout(
+            title="ROC trên tập kiểm thử",
+            height=370,
             xaxis_title="False positive rate",
             yaxis_title="True positive rate",
             legend_title_text="",
         )
-        st.plotly_chart(roc_chart, width="stretch")
+        st.plotly_chart(chart, width="stretch")
 
+    fitted = models[chosen_model]
+    classifier = fitted.named_steps["classifier"]
+    feature_names = fitted.named_steps["preprocess"].get_feature_names_out()
     if chosen_model == "Logistic Regression":
-        importance_values = np.abs(model_active.coef_[0])
-        importance_note = (
-            "Logistic Regression: hệ số tuyệt đối trên dữ liệu đã chuẩn hóa; "
-            "không thể diễn giải là quan hệ nhân quả."
+        raw_importance = np.abs(classifier.coef_[0])
+        explanation = (
+            "Giá trị tuyệt đối của hệ số sau one-hot encoding/chuẩn hóa; "
+            "không biểu thị quan hệ nhân quả."
         )
     else:
-        importance_values = model_active.feature_importances_
-        importance_note = (
-            "Tree models: độ quan trọng theo mức giảm impurity; "
-            "không thể diễn giải là quan hệ nhân quả."
+        raw_importance = classifier.feature_importances_
+        explanation = (
+            "Feature importance dựa trên giảm impurity; "
+            "không biểu thị quan hệ nhân quả."
         )
-    importance_data = pd.DataFrame(
+    importance = pd.DataFrame(
         {
-            "Đặc trưng": [FEATURE_LABELS[name] for name in FEATURES],
-            "Mức quan trọng": importance_values,
+            "Đặc trưng": [
+                name.replace("branch__", "Chuyên ngành: ")
+                .replace("numeric__", "")
+                .replace("_", " ")
+                for name in feature_names
+            ],
+            "Mức quan trọng": raw_importance,
         }
     ).sort_values("Mức quan trọng", ascending=True)
-    importance_chart = px.bar(
-        importance_data,
+    chart = px.bar(
+        importance,
         x="Mức quan trọng",
         y="Đặc trưng",
         orientation="h",
-        text_auto=".3f",
         color="Mức quan trọng",
         color_continuous_scale=["#cceee3", "#10876b"],
-        title=f"Đặc trưng quan trọng · {chosen_model}",
+        title=f"Đặc trưng của {chosen_model}",
     )
-    importance_chart.update_layout(
-        height=410,
-        margin={"l": 15, "r": 20, "t": 65, "b": 25},
-        coloraxis_showscale=False,
-        yaxis_title="",
-    )
-    st.plotly_chart(importance_chart, width="stretch")
-    st.caption(importance_note)
-    st.info(
-        "Accuracy/precision/recall/AUC mô tả hiệu quả trên tập test của dataset này; "
-        "không đảm bảo khả năng dự đoán cho thị trường tuyển dụng thực tế."
-    )
+    chart.update_layout(height=430, coloraxis_showscale=False)
+    st.plotly_chart(chart, width="stretch")
+    st.caption(explanation)
 
 with tab_data:
-    st.subheader("Khám phá và lọc dữ liệu")
-    st.markdown(
-        '<p class="section-note">Tương tác với biểu đồ và bảng để kiểm tra các nhóm hồ sơ.</p>',
-        unsafe_allow_html=True,
+    st.subheader("Kiểm tra dữ liệu đã dùng")
+    st.caption(
+        "Các biến nhân khẩu học/ID không dùng làm đầu vào. "
+        "Gender bị loại để không dùng thuộc tính nhạy cảm trong mô hình."
     )
-    filter_col1, filter_col2 = st.columns(2)
-    with filter_col1:
-        degree_filter = st.multiselect(
-            "Lọc bằng cấp",
-            options=sorted(df_clean["Degree"].unique()),
-            default=sorted(df_clean["Degree"].unique()),
-        )
-    with filter_col2:
-        status_filter = st.multiselect(
-            "Lọc kết quả",
-            options=["Placed", "Not Placed"],
-            default=["Placed", "Not Placed"],
-        )
+    numeric_correlation = df[NUMERIC_FEATURES].copy()
+    numeric_correlation["Placed (0/1)"] = (df[TARGET] == "Placed").astype(int)
+    correlation = numeric_correlation.corr()
+    chart = px.imshow(
+        correlation,
+        text_auto=".2f",
+        zmin=-1,
+        zmax=1,
+        color_continuous_scale="RdBu",
+        title="Tương quan số học giữa các biến số",
+    )
+    chart.update_layout(height=570, coloraxis_colorbar_title="r")
+    st.plotly_chart(chart, width="stretch")
+    st.dataframe(df, width="stretch", hide_index=True)
 
-    filtered_data = df_clean[
-        df_clean["Degree"].isin(degree_filter)
-        & df_clean[TARGET].isin(status_filter)
-    ]
-    st.caption(f"Đang hiển thị {len(filtered_data):,} / {len(df_clean):,} hồ sơ")
-    left_chart, right_chart = st.columns(2, gap="large")
-    with left_chart:
-        degree_counts = (
-            filtered_data.groupby(["Degree", TARGET], observed=True)
-            .size()
-            .reset_index(name="Số hồ sơ")
-        )
-        degree_chart = px.bar(
-            degree_counts,
-            x="Degree",
-            y="Số hồ sơ",
-            color=TARGET,
-            barmode="group",
-            color_discrete_map=COLORS,
-            title="Số hồ sơ theo bằng cấp",
-        )
-        degree_chart.update_layout(height=380, legend_title_text="")
-        st.plotly_chart(degree_chart, width="stretch")
-    with right_chart:
-        correlation_columns = [
-            "CGPA",
-            "Internships",
-            "Projects",
-            "Coding_Skills",
-            "Certifications",
-            "Backlogs",
-            "PlacementStatus_Encoded",
-        ]
-        correlation = filtered_data[correlation_columns].corr(numeric_only=True)
-        correlation.index = [
-            "CGPA",
-            "Thực tập",
-            "Đồ án",
-            "Coding",
-            "Chứng chỉ",
-            "Môn nợ",
-            "Placement",
-        ]
-        correlation.columns = correlation.index
-        heatmap = px.imshow(
-            correlation,
-            text_auto=".2f",
-            zmin=-1,
-            zmax=1,
-            color_continuous_scale="RdBu",
-            title="Tương quan giữa các thuộc tính số",
-        )
-        heatmap.update_layout(height=380, coloraxis_colorbar_title="r")
-        st.plotly_chart(heatmap, width="stretch")
-    display_columns = [
-        column
-        for column in [
-            "Student_ID",
-            "Degree",
-            "Branch",
-            "CGPA",
-            "Internships",
-            "Projects",
-            "Coding_Skills",
-            "Certifications",
-            "Backlogs",
-            TARGET,
-        ]
-        if column in filtered_data.columns
-    ]
-    st.dataframe(
-        filtered_data[display_columns].head(500),
-        width="stretch",
-        hide_index=True,
-    )
-    st.caption("Bảng giới hạn 500 dòng đầu để giữ giao diện phản hồi nhanh.")
+st.caption(
+    "Lưu ý: nhãn placement không tương đương với việc làm bền vững sau tốt nghiệp. "
+    "Muốn kết luận cho đề tài thực tế cần dataset có nguồn gốc, cỡ mẫu và thời điểm "
+    "theo dõi việc làm được xác minh."
+)

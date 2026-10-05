@@ -1,4 +1,4 @@
-import install
+from scripts import install_dataset as install
 
 
 def test_install_dataset_downloads_and_copies_files(tmp_path, monkeypatch, capsys):
@@ -6,7 +6,7 @@ def test_install_dataset_downloads_and_copies_files(tmp_path, monkeypatch, capsy
     destination = tmp_path / "installed"
     nested_source = source / "Student Placement Dataset"
     nested_source.mkdir(parents=True)
-    (source / "README.txt").write_text("dataset", encoding="utf-8")
+    (nested_source / "README.txt").write_text("dataset", encoding="utf-8")
     (nested_source / "train.csv").write_text("id,status\n1,Placed\n", encoding="utf-8")
 
     calls = []
@@ -21,9 +21,11 @@ def test_install_dataset_downloads_and_copies_files(tmp_path, monkeypatch, capsy
     install.install_dataset()
 
     assert calls == [install.DATASET_HANDLE]
-    assert (destination / "README.txt").read_text(encoding="utf-8") == "dataset"
     assert (
-        destination / "Student Placement Dataset" / "train.csv"
+        destination / "README.txt"
+    ).read_text(encoding="utf-8") == "dataset"
+    assert (
+        destination / "train.csv"
     ).read_text(encoding="utf-8") == "id,status\n1,Placed\n"
     assert capsys.readouterr().out == f"Path to dataset files: {destination}\n"
 
