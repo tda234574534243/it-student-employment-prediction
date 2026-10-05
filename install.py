@@ -2,25 +2,28 @@ import kagglehub
 import shutil
 import os
 
-# 1. Tải về thư mục tạm
-path = kagglehub.dataset_download("sonalshinde123/student-placement-dataset")
+DATASET_HANDLE = "sonalshinde123/student-placement-dataset"
+LOCAL_PATH = r"D:\Machine-Course\Placement Dataset"
 
-# 2. Định nghĩa thư mục đích của bạn
-localpath = r"D:\Machine-Course\Placement Dataset"
 
-# Tạo thư mục đích nếu chưa tồn tại
-os.makedirs(localpath, exist_ok=True)
+def copy_dataset_contents(source_path, destination_path):
+    os.makedirs(destination_path, exist_ok=True)
 
-# 3. Sao chép tất cả các file và thư mục con sang thư mục đích
-for filename in os.listdir(path):
-    source_file = os.path.join(path, filename)
-    dest_file = os.path.join(localpath, filename)
-    
-    if os.path.isdir(source_file):
-        # Nếu là thư mục con, dùng copytree (dirs_exist_ok giúp ghi đè nếu đã tồn tại)
-        shutil.copytree(source_file, dest_file, dirs_exist_ok=True)
-    else:
-        # Nếu là file đơn lẻ, dùng copy như cũ
-        shutil.copy(source_file, dest_file)
+    for filename in os.listdir(source_path):
+        source_file = os.path.join(source_path, filename)
+        dest_file = os.path.join(destination_path, filename)
 
-print("Path to dataset files:", localpath)
+        if os.path.isdir(source_file):
+            shutil.copytree(source_file, dest_file, dirs_exist_ok=True)
+        else:
+            shutil.copy(source_file, dest_file)
+
+
+def install_dataset():
+    download_path = kagglehub.dataset_download(DATASET_HANDLE)
+    copy_dataset_contents(download_path, LOCAL_PATH)
+    print("Path to dataset files:", LOCAL_PATH)
+
+
+if __name__ == "__main__":
+    install_dataset()
